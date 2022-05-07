@@ -204,6 +204,11 @@ func getGitInfo(repoPath string) (*gitInfo, error) {
 	headHash := head.Hash()
 	if err == nil {
 		for tt, err := tags.Next(); err == nil; tt, err = tags.Next() {
+			if tt.Hash() == headHash {
+				tag = tt.Name().Short()
+				break
+			}
+
 			tagObj, err := repo.TagObject(tt.Hash())
 			if err != nil {
 				continue
