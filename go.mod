@@ -4,6 +4,7 @@ go 1.13
 
 require (
 	astuart.co/go-healthcheck v0.3.0
+	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/docker/distribution v2.7.1+incompatible // indirect
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
