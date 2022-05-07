@@ -10,13 +10,13 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
+	"github.com/blang/semver/v4"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
-	"gopkg.in/src-d/go-git.v4"
+	git "gopkg.in/src-d/go-git.v4"
 )
 
 const (
@@ -125,6 +125,14 @@ func findGit(fromPath string) string {
 	return fromPath
 }
 
+func getGoSrcPath() string {
+	path := os.Getenv("GOPATH")
+	if path == "" {
+		path = build.Default.GOPATH
+	}
+	return path + "/src"
+}
+
 func (i Info) getPath() string {
 	// Check to see if our library is vendored before returning a specific path,
 	// since this will matter.
@@ -133,11 +141,12 @@ func (i Info) getPath() string {
 	if err != nil || os.Getenv("GO111MODULE") != "on" || !s.IsDir() {
 		return buildmetaPath
 	}
-	major, minor, err := getGoVersion()
-	if err != nil || (major == 1 && minor > 12) {
+	ver, err := getGoVersion()
+	if err != nil || (ver.Major == 1 && ver.Minor > 12) {
 		return buildmetaPath
 	}
-	rel, err := filepath.Rel(build.Default.GOPATH+"/src", vendorPath)
+
+	rel, err := filepath.Rel(getGoSrcPath(), vendorPath)
 	if err != nil {
 		return buildmetaPath
 	}
@@ -158,9 +167,12 @@ func (i Info) LDFlags() string {
 	}, " ")
 }
 
-// GenerateInfo returns the *Info object per a given repoPath on the local
-// filesystem. It does not yet work outside a local filesystem.
-func GenerateInfo(repoPath string) (*Info, error) {
+type gitInfo struct {
+	Tag, Hash, RepoURL string
+	CommitTime         time.Time
+}
+
+func getGitInfo(repoPath string) (*gitInfo, error) {
 	repoPath = findGit(repoPath)
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
@@ -189,10 +201,16 @@ func GenerateInfo(repoPath string) (*Info, error) {
 
 	tag := noTagValue
 	tags, err := repo.Tags()
+	headHash := head.Hash()
 	if err == nil {
 		for tt, err := tags.Next(); err == nil; tt, err = tags.Next() {
-			if tt.Hash() == head.Hash() {
-				tag = tt.Name().Short()
+			tagObj, err := repo.TagObject(tt.Hash())
+			if err != nil {
+				continue
+			}
+
+			if tagObj.Hash == headHash || tagObj.Target == headHash {
+				tag = tagObj.Name
 				break
 			}
 		}
@@ -218,35 +236,53 @@ func GenerateInfo(repoPath string) (*Info, error) {
 	if !stat.IsClean() && os.Getenv("CI") == "" {
 		hString += "-dirty"
 	}
+	return &gitInfo{
+		CommitTime: commit.Author.When,
+		Tag:        tag,
+		Hash:       hString,
+		RepoURL:    repoURL,
+	}, nil
+}
 
-	ver := runtime.Version()
+// GenerateInfo returns the *Info object per a given repoPath on the local
+// filesystem. It does not yet work outside a local filesystem.
+func GenerateInfo(repoPath string) (*Info, error) {
+	gitInfo, err := getGitInfo(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("error getting git repository info: %w", err)
+	}
+
+	ver, err := getGoVersion()
+	if err != nil {
+		return nil, fmt.Errorf("error getting current go version: %w", err)
+	}
 
 	return &Info{
-		GitCommit:      hString,
-		GitCommitTime:  commit.Author.When.Format(time.RFC3339),
-		GitRepo:        repoURL,
-		GitTag:         tag,
+		GitCommit:      gitInfo.Hash,
+		GitCommitTime:  gitInfo.CommitTime.Format(time.RFC3339),
+		GitRepo:        gitInfo.RepoURL,
+		GitTag:         gitInfo.Tag,
 		BuildTime:      time.Now().Format(time.RFC3339),
-		GoBuildVersion: ver,
+		GoBuildVersion: fmt.Sprintf("go%s", ver),
 		repoPath:       repoPath,
 	}, nil
 }
 
-func getGoVersion() (int, int, error) {
+func getGoVersion() (*semver.Version, error) {
 	out, err := exec.Command("go", "version").CombinedOutput()
 	if err != nil {
-		return 0, 0, fmt.Errorf("error running go: %w: %s", err, out)
+		return nil, fmt.Errorf("error running go: %w: %s", err, out)
 	}
 
 	fs := strings.Fields(string(out))
 	if len(fs) < 3 {
-		return 0, 0, fmt.Errorf("not enough fields returned by `go version`: %s", out)
+		return nil, fmt.Errorf("not enough fields returned by `go version`: %s", out)
 	}
 
-	var i, j int
-	_, err = fmt.Sscanf(fs[2], "go%d.%d", &i, &j)
+	ver, err := semver.New(strings.TrimPrefix(fs[2], "go"))
 	if err != nil {
-		return 0, 0, fmt.Errorf("error scanning version numbers: %w", err)
+		return nil, fmt.Errorf("error parsing go semver: %w", err)
 	}
-	return i, j, nil
+
+	return ver, nil
 }
