@@ -201,10 +201,16 @@ func getGitInfo(repoPath string) (*gitInfo, error) {
 
 	tag := noTagValue
 	tags, err := repo.Tags()
+	headHash := head.Hash()
 	if err == nil {
 		for tt, err := tags.Next(); err == nil; tt, err = tags.Next() {
-			if tt.Hash() == head.Hash() {
-				tag = tt.Name().Short()
+			tagObj, err := repo.TagObject(tt.Hash())
+			if err != nil {
+				continue
+			}
+
+			if tagObj.Hash == headHash || tagObj.Target == headHash {
+				tag = tagObj.Name
 				break
 			}
 		}
